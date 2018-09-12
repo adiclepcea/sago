@@ -43,12 +43,14 @@ func Run(){
 
     if err != nil {
         log.Println("Compensated from step 1")
+        return
     }
 
     rez, err = sec.Step("incr", rez[:1])
 
     if err != nil {
         log.Println("Compensated from step 2")
+        return
     }
 
     fmt.Println(rezToYourType(rez))
