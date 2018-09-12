@@ -28,15 +28,30 @@ func decr(i float64) (int, error) {
 	return int(i) - 1, nil
 }
 
+func Run(){
 
-var log = sago.Log{
-	ReadWriter: &bytes.Buffer{},
-	LogItems:   []LogItem{},
+    var log = sago.Log{
+        ReadWriter: &bytes.Buffer{},
+        LogItems:   []LogItem{},
+    }
+
+    sec = sago.NewSEC("test", log)
+    sec.AddAction("atoi", stringToInt, floatToString)
+    sec.AddAction("incr", incr, decr)
+
+    rez, err := sec.Step("atoi", []interface{}{"10"})
+
+	if err != nil {
+		log.Println("Compensated from step 1")
+	}
+
+	rez, err = sec.Step("incr", rez[:1])
+
+	if err != nil {
+		log.Println("Compensated from step 2")
+	}
+
 }
-
-sec = sago.NewSEC("test", log)
-sec.AddAction("atoi", stringToInt, floatToString)
-sec.AddAction("incr", incr, decr)
 
 ```
 
