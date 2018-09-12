@@ -41,15 +41,17 @@ func Run(){
 
     rez, err := sec.Step("atoi", []interface{}{"10"})
 
-	if err != nil {
-		log.Println("Compensated from step 1")
-	}
+    if err != nil {
+        log.Println("Compensated from step 1")
+    }
 
-	rez, err = sec.Step("incr", rez[:1])
+    rez, err = sec.Step("incr", rez[:1])
 
-	if err != nil {
-		log.Println("Compensated from step 2")
-	}
+    if err != nil {
+        log.Println("Compensated from step 2")
+    }
+
+    fmt.Println(rezToYourType(rez))
 
 }
 
