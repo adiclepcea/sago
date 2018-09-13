@@ -22,14 +22,15 @@ const (
 //SEC is the Saga Execution Coordinator
 type SEC struct {
 	Log           *Log
-	steps         map[string]step
+	steps         map[string]SagaStep
 	Status        secStatus
 	ID            string
 	SleepDuration time.Duration
 	mutex         sync.Mutex
 }
 
-type step struct {
+//SagaStep represents a step in saga with one action and one compensating action
+type SagaStep struct {
 	Action             interface{}
 	CompensatingAction interface{}
 }
@@ -40,7 +41,7 @@ func NewSEC(ID string, log Log) *SEC {
 	return &SEC{
 		ID:            ID,
 		Log:           &log,
-		steps:         map[string]step{},
+		steps:         map[string]SagaStep{},
 		Status:        Initialized,
 		mutex:         sync.Mutex{},
 		SleepDuration: 2 * time.Second,
@@ -55,7 +56,7 @@ func (sec *SEC) AddAction(name string, action interface{}, compensatingAction in
 		return fmt.Errorf("Both the action and compensantingAction must be functions")
 	}
 
-	s := step{
+	s := SagaStep{
 		Action:             action,
 		CompensatingAction: compensatingAction,
 	}
@@ -66,6 +67,54 @@ func (sec *SEC) AddAction(name string, action interface{}, compensatingAction in
 	sec.steps[name] = s
 
 	sec.Status = Initialized
+
+	return nil
+}
+
+//Next executes one step with the given name
+func (sec *SEC) Next(name string, action SagaStep, args ...[]interface{}) *SEC {
+	if len(sec.Log.LogItems) > 0 && sec.Log.LogItems[len(sec.Log.LogItems)-1].State == Failed {
+		return sec
+	}
+
+	err := sec.AddAction(name, action.Action, action.CompensatingAction)
+
+	if err != nil {
+		li := LogItem{
+			ActionName: name,
+			DateTime:   dateTime{time.Now()},
+			Params:     nil,
+			Result:     []interface{}{err.Error()},
+			SecName:    sec.ID,
+			State:      Failed,
+		}
+		sec.Log.AddToLog(li)
+		return sec
+	}
+
+	if len(args) > 0 {
+		sec.Step(name, args[0])
+	} else {
+		if len(sec.Log.LogItems) == 0 {
+			sec.Step(name, []interface{}{})
+		} else {
+			rez := sec.Log.LogItems[len(sec.Log.LogItems)-1].Result
+			sec.Step(name, rez[:len(rez)-1])
+		}
+	}
+
+	return sec
+}
+
+//End will perform any possible compensating step when needed
+func (sec *SEC) End() error {
+	if len(sec.Log.LogItems) == 0 {
+		return nil
+	}
+
+	if sec.Log.LogItems[len(sec.Log.LogItems)-1].State == Failed {
+		return sec.compensate(sec.Log)
+	}
 
 	return nil
 }
@@ -100,12 +149,12 @@ func (sec *SEC) Step(stepName string, arguments []interface{}) ([]interface{}, e
 
 	if err != nil {
 		li.State = Failed
-		li.Result = nil
+		li.Result = []interface{}{err.Error()}
 		err := sec.Log.AddToLog(li)
 		if err != nil {
 			panic(err)
 		}
-		sec.compensate(*sec.Log)
+		sec.compensate(sec.Log)
 	} else {
 		li.State = End
 		li.Result = rezToInterface(rez)
@@ -161,12 +210,12 @@ func callFnc(fnc interface{}, arguments []interface{}) ([]reflect.Value, error) 
 	return rez, nil
 }
 
-func (sec *SEC) compensate(sagoLog Log) error {
+func (sec *SEC) compensate(sagoLog *Log) error {
 
 	var rez []reflect.Value
 	var err error
 
-	for i := lastNonFailed(sagoLog); i >= 0; i-- {
+	for i := lastNonFailed(*sagoLog); i >= 0; i-- {
 		if sagoLog.LogItems[i].State == End {
 			stepName := sagoLog.LogItems[i].ActionName
 			compensatingAction := sec.steps[sagoLog.LogItems[i].ActionName].CompensatingAction
@@ -185,18 +234,19 @@ func (sec *SEC) compensate(sagoLog Log) error {
 
 			rez, err = callFnc(compensatingAction, arguments)
 
-			repeats := 0
-			for err != nil && !isErrFatal(err) && repeats < 3 {
+			for err != nil && !isErrFatal(err) {
 				li.State = CompensationFailed
 				li.Result = []interface{}{err.Error()}
 				sagoLog.AddToLog(li)
 
 				time.Sleep(sec.SleepDuration)
 				rez, err = callFnc(compensatingAction, arguments)
-				repeats = repeats + 1
 			}
 
 			if err != nil {
+				li.State = CompensationFailed
+				li.Result = []interface{}{err.Error()}
+				sagoLog.AddToLog(li)
 				return err
 			}
 			li.State = CompensationEnd
@@ -205,8 +255,6 @@ func (sec *SEC) compensate(sagoLog Log) error {
 
 		}
 	}
-
-	fmt.Println(sagoLog.LogItems)
 
 	return nil
 }
@@ -234,4 +282,27 @@ func lastNonFailed(sagoLog Log) int {
 	}
 
 	return lastGoodIndex
+}
+
+//IsCompensated returns true if the saga execution coordinator started the coordination process
+func (sec *SEC) IsCompensated() bool {
+	if len(sec.Log.LogItems) == 0 {
+		return false
+	}
+
+	st := sec.Log.LogItems[len(sec.Log.LogItems)-1].State
+
+	return st == CompensationStart || st == CompensationEnd || st == CompensationFailed
+}
+
+//Result returns the result of the last function if the saga is successfull
+func (sec *SEC) Result() []interface{} {
+	if len(sec.Log.LogItems) == 0 {
+		return nil
+	}
+	if sec.IsCompensated() {
+		return nil
+	}
+
+	return sec.Log.LogItems[len(sec.Log.LogItems)-1].Result
 }

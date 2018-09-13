@@ -46,11 +46,19 @@ func intToString(i int) (string, error) {
 }
 
 func incr(i int) (int, error) {
-	return int(i) + 1, nil
+	return i + 1, nil
 }
 
-func decr(i float64) (int, error) {
+func incrFloat(i float64) (float64, error) {
+	return i + 1, nil
+}
+
+func decr(i int) (int, error) {
 	return int(i) - 1, nil
+}
+
+func decrFloat(i float64) (float64, error) {
+	return i - 1, nil
 }
 
 func TestCallFuncSimple(t *testing.T) {
@@ -255,14 +263,85 @@ func TestTwoSteps(t *testing.T) {
 		t.Fatalf("Expected value 11 in the response, got %d", r)
 	}
 
+	t.Log(sec.Result())
+
+}
+
+func TestThreeStepsWithCompensate(t *testing.T) {
+	sec = NewSEC("test", log)
+	err := sec.AddAction("atoi", stringToInt, floatToString)
+	err = sec.AddAction("incr", incr, decr)
+
+	err = sec.
+		Next("atoi", SagaStep{stringToInt, intToString}, []interface{}{"10"}).
+		Next("incr", SagaStep{incr, decr}).
+		Next("fail", SagaStep{stringToInt, intToString}). //this should fail as stringToInt will be fed the result of incr
+		End()
+
+	t.Log(sec.Log.LogItems)
+
+	if err != nil {
+		t.Fatalf("No error expected while running a succesfull compensation, got %s", err.Error())
+	}
+
+	if len(sec.Log.LogItems) != 10 {
+		t.Fatalf("Expected log to have 10 items, got %d", len(sec.Log.LogItems))
+	}
+
+	if _, ok := sec.Log.LogItems[len(sec.Log.LogItems)-1].Result[0].(string); !ok {
+		t.Fatalf("Expected an int result, got %s", reflect.TypeOf(sec.Log.LogItems[len(sec.Log.LogItems)-1].Result[0]))
+	}
+
+	if sec.Log.LogItems[len(sec.Log.LogItems)-1].State != CompensationEnd {
+		t.Fatalf("Expected an compensation, got %s", sec.Log.LogItems[len(sec.Log.LogItems)-1].State)
+	}
+
+	rez, _ := sec.Log.LogItems[len(sec.Log.LogItems)-1].Result[0].(string)
+
+	if rez != "10" {
+		t.Fatalf("Expected to get a result of \"10\", got, %s", rez)
+	}
+
+	if !sec.IsCompensated() {
+		t.Fatal("Expected sec to be compensated but it is not!")
+	}
+
+	if sec.Result() != nil {
+		t.Fatalf("Expected no valid result, got %v", sec.Result())
+	}
+
 }
 
 func TestCompensateOK(t *testing.T) {
-
-	logContents := `[{"name":"test","time":"2018-09-12T17:41:24","action":"atoi","step":"","state":"Start","params":["10"],"result":null},
-	{"name":"test","time":"2018-09-12T17:41:24","action":"atoi","step":"","state":"End","params":["10"],"result":[10,null]},
-	{"name":"test","time":"2018-09-12T17:41:24","action":"incr","step":"","state":"Start","params":[10],"result":null},
-	{"name":"test","time":"2018-09-12T17:41:24","action":"incr","step":"","state":"End","params":[10],"result":[11,null]}]`
+	logContents := `[{
+		"name": "test",
+		"time": "2018-09-13T20:45:51",
+		"action": "atoi",
+		"state": "Start",
+		"params": ["10"],
+		"result": null
+	}, {
+		"name": "test",
+		"time": "2018-09-13T20:45:51",
+		"action": "atoi",
+		"state": "End",
+		"params": ["10"],
+		"result": [10, null]
+	}, {
+		"name": "test",
+		"time": "2018-09-13T20:45:51",
+		"action": "incr",
+		"state": "Start",
+		"params": [10],
+		"result": null
+	}, {
+		"name": "test",
+		"time": "2018-09-13T20:45:51",
+		"action": "incr",
+		"state": "End",
+		"params": [10],
+		"result": [11, null]
+	}]`
 
 	log := Log{
 		LogItems:   []LogItem{},
@@ -273,7 +352,7 @@ func TestCompensateOK(t *testing.T) {
 	sec := NewSEC("test", log)
 
 	err := sec.AddAction("atoi", stringToInt, floatToString)
-	err = sec.AddAction("incr", incr, decr)
+	err = sec.AddAction("incr", incrFloat, decrFloat)
 
 	_, err = log.ReadWriter.Write([]byte(logContents))
 
@@ -287,7 +366,9 @@ func TestCompensateOK(t *testing.T) {
 		t.Fatalf("Error while ReadingLog: %s", err.Error())
 	}
 
-	err = sec.compensate(log)
+	err = sec.compensate(&log)
+
+	fmt.Println(sec.Log.LogItems)
 
 	if err != nil {
 		t.Fatalf("Error while compensating: %s", err.Error())
@@ -311,7 +392,7 @@ func TestCompensateFail(t *testing.T) {
 	sec := NewSEC("test", log)
 
 	err := sec.AddAction("atoi", stringToInt, intToString)
-	err = sec.AddAction("incr", incr, decr)
+	err = sec.AddAction("incr", incrFloat, decrFloat)
 
 	_, err = log.ReadWriter.Write([]byte(logContents))
 
@@ -325,7 +406,7 @@ func TestCompensateFail(t *testing.T) {
 		t.Fatalf("Error while ReadingLog: %s", err.Error())
 	}
 
-	err = sec.compensate(log)
+	err = sec.compensate(&log)
 
 	if err == nil {
 		t.Fatalf("Error expected  while compensating with invalid parameter, got nil")
